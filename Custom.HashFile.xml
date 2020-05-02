@@ -1,0 +1,198 @@
+﻿<?xml version="1.0" encoding="utf-8"?><ManagementPack ContentReadable="true" SchemaVersion="2.0" OriginalSchemaVersion="1.1" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+  <Manifest>
+    <Identity>
+      <ID>Custom.HashFile</ID>
+      <Version>1.0.0.5</Version>
+    </Identity>
+    <Name>Custom HashFile</Name>
+    <References>
+      <Reference Alias="SC">
+        <ID>Microsoft.SystemCenter.Library</ID>
+        <Version>7.0.8433.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+      <Reference Alias="Windows">
+        <ID>Microsoft.Windows.Library</ID>
+        <Version>7.5.8501.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+      <Reference Alias="Health">
+        <ID>System.Health.Library</ID>
+        <Version>7.0.8433.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+      <Reference Alias="System">
+        <ID>System.Library</ID>
+        <Version>7.5.8501.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+    </References>
+  </Manifest>
+  <Monitoring>
+    <Monitors>
+      <UnitMonitor ID="Custom.HashFile.CompareHash.Monitor" Accessibility="Public" Enabled="true" Target="Windows!Microsoft.Windows.Server.OperatingSystem" ParentMonitorID="Health!System.Health.SecurityState" Remotable="true" Priority="Normal" TypeID="Windows!Microsoft.Windows.TimedScript.TwoStateMonitorType" ConfirmDelivery="false">
+        <Category>SecurityHealth</Category>
+        <AlertSettings AlertMessage="Custom.HashFile.CompareHash.Monitor.AlertMessage">
+          <AlertOnState>Warning</AlertOnState>
+          <AutoResolve>true</AutoResolve>
+          <AlertPriority>Normal</AlertPriority>
+          <AlertSeverity>Warning</AlertSeverity>
+          <AlertParameters>
+            <AlertParameter1>$Target/Host/Property[Type="Windows!Microsoft.Windows.Computer"]/NetworkName$</AlertParameter1>
+            <AlertParameter2>$Data/Context/Property[@Name='FilePath']$</AlertParameter2>
+            <AlertParameter3>$Data/Context/Property[@Name='CurrentFileHash']$</AlertParameter3>
+            <AlertParameter4>$Data/Context/Property[@Name='GoodHashList']$</AlertParameter4>
+          </AlertParameters>
+        </AlertSettings>
+        <OperationalStates>
+          <OperationalState ID="GoodHashFound" MonitorTypeStateID="Success" HealthState="Success" />
+          <OperationalState ID="HashNotFound" MonitorTypeStateID="Error" HealthState="Warning" />
+        </OperationalStates>
+        <Configuration>
+          <IntervalSeconds>86321</IntervalSeconds>
+          <SyncTime />
+          <ScriptName>FileHashCheck.vbs</ScriptName>
+          <Arguments>filepath hashlist</Arguments>
+          <ScriptBody><![CDATA['
+'   File Hash monitoring script
+'   Kevin Holman 
+'   5/2016
+'
+
+Option Explicit
+dim oArgs, filepath, paramHashes, oAPI, oBag, strCommand, oShell
+dim strHashCmd, strHashLine, strHashOut, strHash, HashesArray, Hash, strMatch
+
+'Accept arguments for the file path, and known good hashes in comma delimited format
+  Set oArgs=wscript.arguments
+  filepath = oArgs(0)
+  paramHashes = oArgs(1)
+
+'Load MOMScript API and PropertyBag function
+  Set oAPI = CreateObject("MOM.ScriptAPI")
+  Set oBag = oAPI.CreatePropertyBag()
+
+'Log script event that we are starting task
+  Call oAPI.LogScriptEvent("filehashcheck.vbs", 3322, 0, "Starting hashfile script with filepath: " & filepath & " with known good hashes: " & paramHashes)
+
+'build the command to run for CertUtil
+  strCommand = "%windir%\system32\certutil.exe -hashfile " & filepath
+
+'Create the Wscript Shell object and execute the command
+  Set oShell = WScript.CreateObject("WScript.Shell")
+  Set strHashCmd = oShell.Exec(strCommand)
+
+'Parse the output of CertUtil and output only on the line with the hash
+  Do While Not strHashCmd.StdOut.AtEndOfStream
+    strHashLine = strHashCmd.StdOut.ReadLine()
+    If Instr(strHashLine, "SHA") Then
+        'skip
+    ElseIf Instr(strHashLine, "CertUtil") Then
+	    'skip
+    Else 
+	  strHashOut = strHashLine
+    End If
+  Loop
+
+'Remove spaces from the hash
+  strHash = Replace(strHashOut, " ", "")
+
+'Split the comma seperated hashlist parameter into an array
+  HashesArray = split(paramHashes,",")
+
+'Loop through the array and see if our file hash matches any known good hash
+  For Each Hash in HashesArray
+    'wscript.echo Hash
+    If strHash = Hash Then
+      'wscript.echo "Match found"
+      Call oAPI.LogScriptEvent("filehashcheck.vbs", 3323, 0, "Good match found.  The file " & filepath & " was found to have hash " & strHash & " which was found in the supplied known good hashes: " & paramHashes)
+      Call oBag.AddValue("Match","GoodHashFound")
+      Call oBag.AddValue("CurrentFileHash",strHash)  	
+      Call oBag.AddValue("FilePath",filepath)
+      Call oBag.AddValue("GoodHashList",paramHashes)
+      oAPI.Return(oBag)
+      wscript.quit
+    Else
+      'wscript.echo "Match not found"
+      strMatch = "missing"
+    End If
+  Next
+
+'If we get to this part of the script a hash was not found.  Output a bad propertybag
+  If strMatch = "missing" Then
+    Call oAPI.LogScriptEvent("filehashcheck.vbs", 3324, 2, "This file " & filepath & " does not match any known good hashes.  It was found to have hash " & strHash & " which was NOT found in the supplied known good hashes: " & paramHashes)  
+    Call oBag.AddValue("Match","HashNotFound")
+    Call oBag.AddValue("CurrentFileHash",strHash)
+    Call oBag.AddValue("FilePath",filepath)
+    Call oBag.AddValue("GoodHashList",paramHashes)  
+    oAPI.Return(oBag)
+  End If
+
+wscript.quit]]></ScriptBody>
+          <TimeoutSeconds>60</TimeoutSeconds>
+          <ErrorExpression>
+            <SimpleExpression>
+              <ValueExpression>
+                <XPathQuery Type="String">Property[@Name='Match']</XPathQuery>
+              </ValueExpression>
+              <Operator>Equal</Operator>
+              <ValueExpression>
+                <Value Type="String">HashNotFound</Value>
+              </ValueExpression>
+            </SimpleExpression>
+          </ErrorExpression>
+          <SuccessExpression>
+            <SimpleExpression>
+              <ValueExpression>
+                <XPathQuery Type="String">Property[@Name='Match']</XPathQuery>
+              </ValueExpression>
+              <Operator>Equal</Operator>
+              <ValueExpression>
+                <Value Type="String">GoodHashFound</Value>
+              </ValueExpression>
+            </SimpleExpression>
+          </SuccessExpression>
+        </Configuration>
+      </UnitMonitor>
+    </Monitors>
+    <Overrides>
+      <MonitorConfigurationOverride ID="OverrideForCustomHashFileCompareHashMonitor" Context="Windows!Microsoft.Windows.OperatingSystem" Enforced="false" Monitor="Custom.HashFile.CompareHash.Monitor" Parameter="Arguments">
+        <Value>%windir%\system32\sethc.exe 167891d5ef9a442cce490e7e317bfd24a623ee12,81de6ab557b31b8c34800c3a4150be6740ef445a,02b688fe73af9aab790f8983faf2abbea74a6922,9daecb1ee5d7cbcf46ee154dd642fcd993723a9b,c20ca679fc835672fb3b81e33c05724c4f64cda9,cabfefcbdf04297b6cb4405c965df29d1076216e,932ee231e70bcac31cf8e66be900effff6671099</Value>
+      </MonitorConfigurationOverride>
+    </Overrides>
+  </Monitoring>
+  <Presentation>
+    <StringResources>
+      <StringResource ID="Custom.HashFile.CompareHash.Monitor.AlertMessage" />
+    </StringResources>
+  </Presentation>
+  <LanguagePacks>
+    <LanguagePack ID="ENU" IsDefault="true">
+      <DisplayStrings>
+        <DisplayString ElementID="Custom.HashFile">
+          <Name>Custom HashFile</Name>
+        </DisplayString>
+        <DisplayString ElementID="Custom.HashFile.CompareHash.Monitor">
+          <Name>Custom HashFile CompareHash Monitor</Name>
+        </DisplayString>
+        <DisplayString ElementID="Custom.HashFile.CompareHash.Monitor" SubElementID="HashNotFound">
+          <Name>HashNotFound</Name>
+        </DisplayString>
+        <DisplayString ElementID="Custom.HashFile.CompareHash.Monitor" SubElementID="GoodHashFound">
+          <Name>GoodHashFound</Name>
+        </DisplayString>
+        <DisplayString ElementID="Custom.HashFile.CompareHash.Monitor.AlertMessage">
+          <Name>File integrity issue: wrong hash detected for a system file</Name>
+          <Description>The file integrity of a system file is compromised
+
+Computername:  {0}
+Filename:  {1}
+File Hash:  {2}
+Good Hash List:  {3}
+
+</Description>
+        </DisplayString>
+      </DisplayStrings>
+    </LanguagePack>
+  </LanguagePacks>
+</ManagementPack>
